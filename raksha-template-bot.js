@@ -55,7 +55,7 @@
  * - Pure logic only; do not mutate external state.
  */
 const bot = {
-  botName: "IWILLUPLOAD",
+  botName: "PAKINGMADERFAKER",
   botAuthor: "ErnestV1",
   botLore: "A coordinated altar-rush tactician that pairs a sieger with a support escort and only detours for high-value shrine or defense swings.",
   version: "3.0.0",

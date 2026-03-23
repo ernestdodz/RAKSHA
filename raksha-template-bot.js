@@ -1153,7 +1153,8 @@ const bot = {
         return this.distance(action.toTile, strategy.myAltar.coord) <= 2;
       }
       if (action.type === "SKILL") {
-        return this.distance(action.targetTile, strategy.myAltar.coord) <= 2;
+        return this.distance(candidate.actor.coord, strategy.myAltar.coord) <= 2
+          && this.distance(action.targetTile, strategy.myAltar.coord) <= 2;
       }
       return false;
     });
@@ -1182,6 +1183,7 @@ const bot = {
       if (immediateAttackers.some((enemy) => enemy.id === candidate.targetPiece.id)) score += 700;
       score += Math.max(0, 3 - this.distance(candidate.targetPiece.coord, strategy.myAltar.coord)) * 150;
     } else if (action.type === "SKILL") {
+      if (this.distance(actor.coord, strategy.myAltar.coord) > 2) return -9999;
       score += 500;
       score += Math.max(0, 3 - this.distance(action.targetTile, strategy.myAltar.coord)) * 140;
     } else if (action.type === "MOVE") {
@@ -1706,7 +1708,10 @@ const bot = {
       } else if (action.type === "MOVE" && this.distance(action.toTile, strategy.myAltar.coord) <= 2) {
         score += this.scoreMoveForRole(gameState, strategy.myPlayerId, candidate, strategy) + 280;
       } else if (action.type === "SKILL") {
-        score += this.scoreSkillForPathControl(gameState, candidate, strategy);
+        if (this.distance(candidate.actor.coord, strategy.myAltar.coord) <= 2) {
+          score += this.scoreSkillForPathControl(gameState, candidate, strategy);
+          score += this.scoreDefensiveSkillPlacement(candidate, strategy);
+        }
       }
       if (score > best) best = score;
     }
@@ -1718,6 +1723,7 @@ const bot = {
     const action = candidate.action;
     if (!actor || actor.type !== "CHARACTER" || action.type !== "SKILL") return 0;
     if (strategy.enemyThreatLevel === "none") return 0;
+    if (this.distance(actor.coord, strategy.myAltar.coord) > 2) return 0;
 
     const targetTile = action.targetTile;
     const immediateAttackers = strategy.enemyThreat && strategy.enemyThreat.immediateAttackers

@@ -171,6 +171,8 @@ const bot = {
     const enemyHp = (gameState.playerHp && gameState.playerHp[enemyId]) || 6;
     const strategy = this.buildStrategyContext(gameState, myPlayerId, myHeroes, enemyHeroes, myAltar, enemyAltar, myHp, enemyHp);
     const bestHeroDefenseScore = this.bestHeroDefenseScore(gameState, legalActions, strategy);
+    const forcedSiegeConversion = this.findForcedSiegeConversion(legalActions, strategy);
+    if (forcedSiegeConversion) return forcedSiegeConversion.action;
     const forcedShrineCommit = this.findForcedShrineCommit(legalActions, strategy);
     if (forcedShrineCommit) return forcedShrineCommit.action;
     const forcedShrineAdvance = this.findForcedShrineAdvance(legalActions, strategy);
@@ -1069,9 +1071,46 @@ const bot = {
     return commits[0];
   },
 
-  findForcedShrineAdvance(legalActions, strategy) {
-    if (!strategy || !strategy.openingShrineWindow) return null;
+  findForcedSiegeConversion(legalActions, strategy) {
+    if (!strategy) return null;
     if (strategy.enemyThreatLevel !== "none") return null;
+
+    const siegeMoves = (legalActions || []).filter((candidate) => {
+      if (!candidate || candidate.actor.type !== "CHARACTER") return false;
+      const actor = candidate.actor;
+      const role = this.roleForHero(actor, strategy);
+      const buffed = this.actorHasCombatBlessing(actor);
+      const pressureActor = buffed || actor.id === strategy.primarySiegerId || role === "sieger";
+      if (!pressureActor) return false;
+
+      if (candidate.action.type === "ATTACK" && candidate.targetPiece && candidate.targetPiece.type === "ALTAR") {
+        return true;
+      }
+      if (candidate.action.type !== "MOVE") return false;
+      const before = this.distance(actor.coord, strategy.enemyAltar.coord);
+      const after = this.distance(candidate.action.toTile, strategy.enemyAltar.coord);
+      return before <= 3 && after < before;
+    });
+    if (siegeMoves.length === 0) return null;
+
+    siegeMoves.sort((left, right) => {
+      const leftIsAttack = left.action.type === "ATTACK" ? 1 : 0;
+      const rightIsAttack = right.action.type === "ATTACK" ? 1 : 0;
+      if (leftIsAttack !== rightIsAttack) return rightIsAttack - leftIsAttack;
+      const leftBuff = this.actorHasCombatBlessing(left.actor) ? 1 : 0;
+      const rightBuff = this.actorHasCombatBlessing(right.actor) ? 1 : 0;
+      if (leftBuff !== rightBuff) return rightBuff - leftBuff;
+      const leftAfter = left.action.type === "MOVE" ? this.distance(left.action.toTile, strategy.enemyAltar.coord) : 0;
+      const rightAfter = right.action.type === "MOVE" ? this.distance(right.action.toTile, strategy.enemyAltar.coord) : 0;
+      if (leftAfter !== rightAfter) return leftAfter - rightAfter;
+      return this.actionKey(left.action).localeCompare(this.actionKey(right.action));
+    });
+    return siegeMoves[0];
+  },
+
+  findForcedShrineAdvance(legalActions, strategy) {
+    if (!strategy) return null;
+    if (strategy.enemyThreatLevel === "immediate") return null;
     if (!strategy.chargedShrines || strategy.chargedShrines.length === 0) return null;
 
     const moves = (legalActions || []).filter((candidate) => {
@@ -1489,7 +1528,7 @@ const bot = {
   shouldSkipSkillTurn(candidate, strategy) {
     if (!candidate || candidate.action.type !== "SKILL") return false;
     if (strategy.enemyThreatLevel !== "none") return false;
-    return strategy.openingShrineWindow && strategy.chargedShrines.length > 0;
+    return strategy.chargedShrines.length > 0;
   },
 
   shouldDelaySkillForShrineOrSiege(candidate, strategy) {

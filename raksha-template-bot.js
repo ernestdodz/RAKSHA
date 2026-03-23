@@ -115,6 +115,9 @@ const bot = {
     defensiveSkillBase: 420,
     willowDefenseBonus: 360,
     chokeDefenseBonus: 220,
+    remoteSkillSpamPenalty: 650,
+    castleRingSkillBonus: 420,
+    altarEscapeBonus: 520,
     selfTrapSkillPenalty: 2600,
     openingSkillDelayPenalty: 900,
     shrineBlockPenalty: 2200,
@@ -638,6 +641,12 @@ const bot = {
     const fromTile = actor.coord;
     let score = 0;
 
+    if (actor.type === "ALTAR" || role === "altar") {
+      score += this.scoreAltarEscapeMove(fromTile, toTile, strategy);
+      score -= this.tileRiskPenalty(gameState, toTile, strategy, role);
+      return Math.trunc(score);
+    }
+
     const beforePath = this.computePathForRole(gameState, actor, fromTile, role, strategy);
     const afterPath = this.computePathForRole(gameState, actor, toTile, role, strategy);
     const progress = Math.max(0, beforePath.totalCost - afterPath.totalCost);
@@ -749,6 +758,7 @@ const bot = {
     if (this.shouldDelaySkillForShrineOrSiege(candidate, strategy)) {
       score -= this.WEIGHTS.openingSkillDelayPenalty;
     }
+    score -= this.scoreRemoteSkillSpamPenalty(candidate, strategy);
 
     if (role === "support" && distToSiegerPath <= 1) score += 120;
     if (role === "sieger" && distToEnemyAltar <= 2) score += 150;
@@ -1889,6 +1899,29 @@ const bot = {
     return score;
   },
 
+  scoreRemoteSkillSpamPenalty(candidate, strategy) {
+    const actor = candidate.actor;
+    const action = candidate.action;
+    if (!actor || actor.type !== "CHARACTER" || action.type !== "SKILL") return 0;
+    const targetTile = action.targetTile;
+    const localThreats = this.localAltarThreats(strategy);
+    const castleRing = this.distance(targetTile, strategy.myAltar.coord) <= 1;
+    const nearCastle = this.distance(targetTile, strategy.myAltar.coord) <= 2;
+    if (castleRing && localThreats.length > 0) {
+      return -this.WEIGHTS.castleRingSkillBonus;
+    }
+    if (nearCastle && localThreats.length > 0) {
+      return -Math.trunc(this.WEIGHTS.castleRingSkillBonus * 0.55);
+    }
+    if (localThreats.length === 0 && this.distance(actor.coord, strategy.myAltar.coord) > 2) {
+      return this.WEIGHTS.remoteSkillSpamPenalty;
+    }
+    if (localThreats.length === 0 && this.distance(targetTile, strategy.myAltar.coord) > 2) {
+      return Math.trunc(this.WEIGHTS.remoteSkillSpamPenalty * 0.75);
+    }
+    return 0;
+  },
+
   localAltarThreats(strategy) {
     const immediateAttackers = strategy.enemyThreat && strategy.enemyThreat.immediateAttackers
       ? strategy.enemyThreat.immediateAttackers
@@ -1955,6 +1988,25 @@ const bot = {
     if (afterSupport < beforeSupport) {
       score += (beforeSupport - afterSupport) * Math.trunc(this.WEIGHTS.escapePressureBonus * 0.6);
     }
+    return score;
+  },
+
+  scoreAltarEscapeMove(fromTile, toTile, strategy) {
+    const beforeAdjacent = this.countAdjacentPieces(fromTile, strategy.enemyHeroes);
+    const afterAdjacent = this.countAdjacentPieces(toTile, strategy.enemyHeroes);
+    const beforeThreat = this.localAltarThreats(strategy).length;
+    let score = 0;
+    if (afterAdjacent < beforeAdjacent) {
+      score += (beforeAdjacent - afterAdjacent) * this.WEIGHTS.altarEscapeBonus;
+    }
+    if (beforeThreat > 0 && this.distance(toTile, strategy.myAltar.coord) <= 1) {
+      score += Math.trunc(this.WEIGHTS.altarEscapeBonus * 0.5);
+    }
+    const openNeighbors = this.directionVectors().filter((direction) => {
+      const next = { x: toTile.x + direction.x, y: toTile.y + direction.y };
+      return !this.isVoidTile({ boardSize: 0, activeBounds: strategy.activeBounds }, next, strategy.activeBounds);
+    }).length;
+    score += openNeighbors * 8;
     return score;
   },
 

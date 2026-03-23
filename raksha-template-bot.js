@@ -55,7 +55,7 @@
  * - Pure logic only; do not mutate external state.
  */
 const bot = {
-  botName: "KINGDEMOLISHER",
+  botName: "TAONGTABON",
   botAuthor: "ErnestV1",
   botLore: "A coordinated altar-rush tactician that pairs a sieger with a support escort and only detours for high-value shrine or defense swings.",
   version: "3.0.0",
@@ -1095,6 +1095,9 @@ const bot = {
     const commits = (legalActions || []).filter((candidate) => {
       if (!candidate || candidate.actor.type !== "CHARACTER") return false;
       if (candidate.action.type !== "MOVE") return false;
+      if (candidate.actor.characterId === "anika" && !this.shouldHeroStayShrineLocked(candidate.actor, strategy)) {
+        return false;
+      }
       return strategy.chargedShrines.some((tile) => this.isSameTile(tile, candidate.action.toTile));
     });
 
@@ -1225,9 +1228,9 @@ const bot = {
       const role = this.roleForHero(candidate.actor, strategy);
       const isPreferred = candidate.actor.id === strategy.shrineRunnerId
         || (nearestHero && candidate.actor.id === nearestHero.id)
-        || role === "support";
+        || role === "support"
+        || (candidate.actor.characterId === "anika" && this.shouldHeroStayShrineLocked(candidate.actor, strategy));
       if (!isPreferred) return false;
-      if (candidate.actor.characterId === "anika" && !this.shouldHeroStayShrineLocked(candidate.actor, strategy)) return false;
       return this.distance(candidate.action.toTile, nearestShrine) < this.distance(candidate.actor.coord, nearestShrine);
     });
     if (moves.length === 0) return null;
@@ -1269,6 +1272,7 @@ const bot = {
     if (role === "support") score += 180;
     if (role === "shrine") score += 220;
     if (actor.characterId === "kidu") score += 220;
+    if (actor.characterId === "anika" && this.shouldHeroStayShrineLocked(actor, strategy)) score += 260;
     if (actor.characterId === "jumka" && strategy.enemyThreatLevel !== "none") score -= 260;
     if (this.isShrineChannelSafe(candidate.action.toTile, strategy)) score += 260;
     if (strategy.shrineRaceFavored) score += 120;

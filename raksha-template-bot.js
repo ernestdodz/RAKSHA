@@ -76,6 +76,9 @@ const bot = {
     unsupportedAdvancePenalty: 230,
     lowHpThreatPenalty: 380,
     abandonDefensePenalty: 320,
+    enemySkillDangerPenalty: 210,
+    chaseThreatPenalty: 260,
+    followUpTrapPenalty: 220,
     progressToAltar: 280,
     twoTurnSiegeBonus: 580,
     castleProximityBonus: 260,
@@ -305,24 +308,28 @@ const bot = {
   buildStrategyContext(gameState, myPlayerId, myHeroes, enemyHeroes, myAltar, enemyAltar, myHp, enemyHp) {
     const activeBounds = this.getActiveBounds(gameState);
     const chargedShrines = this.getChargedShrines(gameState);
+    const enemySkillObjects = this.getEnemySkillObjects(gameState, myPlayerId);
     const pathCache = {};
 
     for (const hero of myHeroes) {
       pathCache[hero.id] = {
         toEnemyAltar: this.computeSafePath(gameState, hero.coord, this.getAltarApproachTiles(gameState, enemyAltar.coord), {
           enemyHeroes,
+          enemySkillObjects,
           myAltar,
           enemyAltar,
           enemyThreatLevel: "none",
         }),
         toOwnAltar: this.computeSafePath(gameState, hero.coord, this.getAltarApproachTiles(gameState, myAltar.coord), {
           enemyHeroes,
+          enemySkillObjects,
           myAltar,
           enemyAltar,
           enemyThreatLevel: "none",
         }),
         toShrine: this.computeSafePath(gameState, hero.coord, chargedShrines, {
           enemyHeroes,
+          enemySkillObjects,
           myAltar,
           enemyAltar,
           enemyThreatLevel: "none",
@@ -361,10 +368,12 @@ const bot = {
       enemyAltar,
       myHeroes,
       enemyHeroes,
+      enemySkillObjects: this.getEnemySkillObjects(gameState, myPlayerId),
       myHp,
       enemyHp,
       activeBounds,
       chargedShrines,
+      enemySkillObjects,
       pathCache,
       primarySiegerId: roleAssignment.primarySiegerId,
       supportHeroId: roleAssignment.supportHeroId,
@@ -920,6 +929,7 @@ const bot = {
 
   pathTilePenalty(gameState, tile, options) {
     const enemyHeroes = (options && options.enemyHeroes) || [];
+    const enemySkillObjects = (options && options.enemySkillObjects) || [];
     let penalty = 0;
 
     for (const enemy of enemyHeroes) {
@@ -927,6 +937,13 @@ const bot = {
       if (dist === 0) penalty += 40;
       else if (dist === 1) penalty += 16;
       else if (dist === 2) penalty += 5;
+    }
+
+    for (const skill of enemySkillObjects) {
+      const dist = this.distance(tile, skill.coord);
+      if (dist === 0) penalty += this.WEIGHTS.enemySkillDangerPenalty;
+      else if (dist === 1) penalty += Math.trunc(this.WEIGHTS.enemySkillDangerPenalty * 0.65);
+      else if (dist === 2) penalty += Math.trunc(this.WEIGHTS.enemySkillDangerPenalty * 0.3);
     }
 
     const openNeighbors = this.directionVectors().filter((direction) => {
@@ -947,11 +964,15 @@ const bot = {
     let penalty = 0;
     const nearbyEnemies = strategy.enemyHeroes.filter((enemy) => this.distance(enemy.coord, tile) <= 1).length;
     penalty += nearbyEnemies * this.WEIGHTS.unsafeMovePenalty;
+    const nearbyEnemySkills = (strategy.enemySkillObjects || []).filter((piece) => this.distance(piece.coord, tile) <= 1).length;
+    penalty += nearbyEnemySkills * this.WEIGHTS.enemySkillDangerPenalty;
     const enemySupport = this.countAdjacentPieces(tile, strategy.enemyHeroes);
     const allySupport = this.countAdjacentPieces(tile, strategy.myHeroes);
     if (enemySupport > allySupport + 1) {
       penalty += (enemySupport - allySupport - 1) * this.WEIGHTS.unsupportedAdvancePenalty;
     }
+    const chasePenalty = this.chaseThreatPenalty(tile, strategy.enemyHeroes);
+    penalty += chasePenalty;
 
     if (strategy.myHp <= 2 && nearbyEnemies > 0) penalty += this.WEIGHTS.lowHpThreatPenalty;
     if (strategy.enemyThreatLevel !== "none" && role !== "support" && this.distance(tile, strategy.myAltar.coord) > 4) {
@@ -1311,6 +1332,13 @@ const bot = {
       .sort((a, b) => a.id.localeCompare(b.id));
   },
 
+  getEnemySkillObjects(gameState, myPlayerId) {
+    return gameState.pieces
+      .filter((piece) => piece.owner !== myPlayerId && piece.type === "SKILL_OBJECT")
+      .slice()
+      .sort((a, b) => a.id.localeCompare(b.id));
+  },
+
   getActiveBounds(gameState) {
     if (gameState.activeBounds) return gameState.activeBounds;
     return {
@@ -1493,6 +1521,16 @@ const bot = {
       if (dist < best) best = dist;
     }
     return best;
+  },
+
+  chaseThreatPenalty(tile, enemies) {
+    let penalty = 0;
+    for (const enemy of enemies || []) {
+      const dist = this.distance(tile, enemy.coord);
+      if (dist <= 1) penalty += this.WEIGHTS.chaseThreatPenalty;
+      else if (dist === 2) penalty += Math.trunc(this.WEIGHTS.chaseThreatPenalty * 0.55);
+    }
+    return penalty;
   },
 
   closestTile(fromTile, tiles) {

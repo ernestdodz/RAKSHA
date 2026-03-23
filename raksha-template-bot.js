@@ -55,7 +55,7 @@
  * - Pure logic only; do not mutate external state.
  */
 const bot = {
-  botName: "MGATAGALOG ",
+  botName: "WIKASSNIGGA",
   botAuthor: "ErnestV1",
   botLore: "A coordinated altar-rush tactician that pairs a sieger with a support escort and only detours for high-value shrine or defense swings.",
   version: "3.0.0",
@@ -79,6 +79,9 @@ const bot = {
     enemySkillDangerPenalty: 210,
     chaseThreatPenalty: 260,
     followUpTrapPenalty: 220,
+    adjacencyThreatPenalty: 190,
+    overlapThreatPenalty: 130,
+    escapePressureBonus: 200,
     progressToAltar: 280,
     twoTurnSiegeBonus: 580,
     castleProximityBonus: 260,
@@ -938,6 +941,7 @@ const bot = {
       else if (dist === 1) penalty += 16;
       else if (dist === 2) penalty += 5;
     }
+    penalty += this.adjacencyThreatPenalty(tile, enemyHeroes);
 
     for (const skill of enemySkillObjects) {
       const dist = this.distance(tile, skill.coord);
@@ -971,6 +975,7 @@ const bot = {
     if (enemySupport > allySupport + 1) {
       penalty += (enemySupport - allySupport - 1) * this.WEIGHTS.unsupportedAdvancePenalty;
     }
+    penalty += this.adjacencyThreatPenalty(tile, strategy.enemyHeroes);
     const chasePenalty = this.chaseThreatPenalty(tile, strategy.enemyHeroes);
     penalty += chasePenalty;
 
@@ -1105,6 +1110,7 @@ const bot = {
       const buffed = this.actorHasCombatBlessing(actor);
       const pressureActor = buffed || actor.id === strategy.primarySiegerId || role === "sieger";
       if (!pressureActor) return false;
+      if (!this.shouldPreferCastleFinish(actor, strategy)) return false;
 
       if (candidate.action.type === "ATTACK" && candidate.targetPiece && candidate.targetPiece.type === "ALTAR") {
         return true;
@@ -1139,6 +1145,7 @@ const bot = {
     const immediateAttackers = strategy.enemyThreat && strategy.enemyThreat.immediateAttackers
       ? strategy.enemyThreat.immediateAttackers
       : [];
+    const localThreats = this.localAltarThreats(strategy);
     if (chargedThreats.length === 0 && immediateAttackers.length === 0) return null;
 
     const defenses = (legalActions || []).filter((candidate) => {
@@ -1153,6 +1160,7 @@ const bot = {
         return this.distance(action.toTile, strategy.myAltar.coord) <= 2;
       }
       if (action.type === "SKILL") {
+        if (localThreats.length === 0) return false;
         return this.distance(candidate.actor.coord, strategy.myAltar.coord) <= 2
           && this.distance(action.targetTile, strategy.myAltar.coord) <= 2;
       }
@@ -1183,7 +1191,7 @@ const bot = {
       if (immediateAttackers.some((enemy) => enemy.id === candidate.targetPiece.id)) score += 700;
       score += Math.max(0, 3 - this.distance(candidate.targetPiece.coord, strategy.myAltar.coord)) * 150;
     } else if (action.type === "SKILL") {
-      if (this.distance(actor.coord, strategy.myAltar.coord) > 2) return -9999;
+      if (this.distance(actor.coord, strategy.myAltar.coord) > 2 || this.localAltarThreats(strategy).length === 0) return -9999;
       score += 500;
       score += Math.max(0, 3 - this.distance(action.targetTile, strategy.myAltar.coord)) * 140;
     } else if (action.type === "MOVE") {
@@ -1209,6 +1217,7 @@ const bot = {
         || (nearestHero && candidate.actor.id === nearestHero.id)
         || role === "support";
       if (!isPreferred) return false;
+      if (candidate.actor.characterId === "anika" && !this.shouldHeroStayShrineLocked(candidate.actor, strategy)) return false;
       return this.distance(candidate.action.toTile, nearestShrine) < this.distance(candidate.actor.coord, nearestShrine);
     });
     if (moves.length === 0) return null;
@@ -1649,6 +1658,9 @@ const bot = {
 
   shouldSkipSkillTurn(candidate, strategy) {
     if (!candidate || candidate.action.type !== "SKILL") return false;
+    if (candidate.actor && candidate.actor.characterId === "anika" && this.shouldSuppressAnikaClone(candidate, strategy)) {
+      return true;
+    }
     if (strategy.enemyThreatLevel !== "none") return false;
     return strategy.chargedShrines.length > 0;
   },
@@ -1699,6 +1711,7 @@ const bot = {
 
   bestHeroDefenseScore(gameState, legalActions, strategy) {
     let best = -9999;
+    const localThreats = this.localAltarThreats(strategy);
     for (const candidate of legalActions || []) {
       if (!candidate || candidate.actor.type !== "CHARACTER") continue;
       const action = candidate.action;
@@ -1708,7 +1721,7 @@ const bot = {
       } else if (action.type === "MOVE" && this.distance(action.toTile, strategy.myAltar.coord) <= 2) {
         score += this.scoreMoveForRole(gameState, strategy.myPlayerId, candidate, strategy) + 280;
       } else if (action.type === "SKILL") {
-        if (this.distance(candidate.actor.coord, strategy.myAltar.coord) <= 2) {
+        if (this.distance(candidate.actor.coord, strategy.myAltar.coord) <= 2 && localThreats.length > 0) {
           score += this.scoreSkillForPathControl(gameState, candidate, strategy);
           score += this.scoreDefensiveSkillPlacement(candidate, strategy);
         }
@@ -1724,6 +1737,7 @@ const bot = {
     if (!actor || actor.type !== "CHARACTER" || action.type !== "SKILL") return 0;
     if (strategy.enemyThreatLevel === "none") return 0;
     if (this.distance(actor.coord, strategy.myAltar.coord) > 2) return 0;
+    if (this.localAltarThreats(strategy).length === 0) return 0;
 
     const targetTile = action.targetTile;
     const immediateAttackers = strategy.enemyThreat && strategy.enemyThreat.immediateAttackers
@@ -1805,11 +1819,14 @@ const bot = {
       score += Math.max(0, 3 - this.distance(toTile, strategy.center)) * this.WEIGHTS.sajikControlBonus;
     }
     if (heroId === "anika" && strategy.phase === "conversion") {
-      score += Math.max(0, 3 - this.distance(toTile, strategy.enemyAltar.coord)) * this.WEIGHTS.anikaConversionBonus;
+      if (!this.shouldHeroStayShrineLocked(actor, strategy)) {
+        score += Math.max(0, 3 - this.distance(toTile, strategy.enemyAltar.coord)) * this.WEIGHTS.anikaConversionBonus;
+      }
     }
     if (role === "defender" && strategy.defenseWindow) {
       score += this.WEIGHTS.phaseDefenseBonus;
     }
+    score += this.escapePressureSwing(actor.coord, toTile, strategy);
     return score;
   },
 
@@ -1821,7 +1838,9 @@ const bot = {
     if (strategy.phase === "siege" && this.distance(actor.coord, strategy.enemyAltar.coord) <= 2) {
       score += this.WEIGHTS.nineByNineSiegeBonus;
     }
-    if (heroId === "anika" && strategy.phase === "conversion") score += this.WEIGHTS.anikaConversionBonus;
+    if (heroId === "anika" && strategy.phase === "conversion" && !this.shouldHeroStayShrineLocked(actor, strategy)) {
+      score += this.WEIGHTS.anikaConversionBonus;
+    }
     if (heroId === "kidu" && this.actorHasCombatBlessing(actor)) score += this.WEIGHTS.kiduShrineRunnerBonus;
     if (heroId === "jumka" && strategy.defenseWindow && this.distance(target.coord, strategy.myAltar.coord) <= 3) {
       score += this.WEIGHTS.jumkaDefenseHoldBonus;
@@ -1836,12 +1855,13 @@ const bot = {
     const action = candidate.action;
     if (!actor || actor.type !== "CHARACTER" || action.type !== "SKILL") return 0;
     const heroId = actor.characterId;
+    if (heroId === "anika" && this.shouldSuppressAnikaClone(candidate, strategy)) return -this.WEIGHTS.selfTrapSkillPenalty;
     const targetTile = action.targetTile;
     let score = 0;
     const nearestShrine = this.closestTile(targetTile, strategy.chargedShrines);
     const shrineAdj = nearestShrine ? this.distance(targetTile, nearestShrine) <= 1 : false;
     if (heroId === "jumka") {
-      if (strategy.defenseWindow) {
+      if (strategy.defenseWindow && this.localAltarThreats(strategy).length > 0) {
         score += this.WEIGHTS.willowDefenseBonus + Math.max(0, 4 - this.distance(targetTile, strategy.myAltar.coord)) * 70;
       } else if (shrineAdj) {
         score += Math.trunc(this.WEIGHTS.willowDefenseBonus * 0.45);
@@ -1849,10 +1869,10 @@ const bot = {
     }
     if (heroId === "faros") {
       if (shrineAdj || this.distance(targetTile, strategy.center) <= 1) score += this.WEIGHTS.farosChokeBonus;
-      if (strategy.defenseWindow && this.distance(targetTile, strategy.myAltar.coord) <= 3) score += Math.trunc(this.WEIGHTS.farosChokeBonus * 0.8);
+      if (strategy.defenseWindow && this.localAltarThreats(strategy).length > 0 && this.distance(targetTile, strategy.myAltar.coord) <= 3) score += Math.trunc(this.WEIGHTS.farosChokeBonus * 0.8);
     }
     if (heroId === "mahui") {
-      if (strategy.defenseWindow && this.distance(targetTile, strategy.myAltar.coord) <= 3) score += this.WEIGHTS.mahuiDefenseTrapBonus;
+      if (strategy.defenseWindow && this.localAltarThreats(strategy).length > 0 && this.distance(targetTile, strategy.myAltar.coord) <= 3) score += this.WEIGHTS.mahuiDefenseTrapBonus;
       if (shrineAdj) score += Math.trunc(this.WEIGHTS.mahuiDefenseTrapBonus * 0.7);
     }
     if (heroId === "sajik") {
@@ -1863,8 +1883,77 @@ const bot = {
       if (strategy.phase === "opening" && nearestShrine) score += Math.max(0, 4 - this.distance(targetTile, nearestShrine)) * 55;
       if (this.distance(targetTile, strategy.enemyAltar.coord) <= 3) score += 120;
     }
-    if (heroId === "anika" && strategy.conversionWindow) {
+    if (heroId === "anika" && strategy.conversionWindow && !this.shouldHeroStayShrineLocked(actor, strategy)) {
       score += Math.max(0, 4 - this.distance(targetTile, strategy.enemyAltar.coord)) * 55;
+    }
+    return score;
+  },
+
+  localAltarThreats(strategy) {
+    const immediateAttackers = strategy.enemyThreat && strategy.enemyThreat.immediateAttackers
+      ? strategy.enemyThreat.immediateAttackers
+      : [];
+    const localThreats = (strategy.enemyHeroes || []).filter((enemy) => this.distance(enemy.coord, strategy.myAltar.coord) <= 3);
+    const seen = {};
+    const merged = [];
+    for (const enemy of immediateAttackers.concat(localThreats)) {
+      if (!enemy || seen[enemy.id]) continue;
+      seen[enemy.id] = true;
+      merged.push(enemy);
+    }
+    return merged;
+  },
+
+  shouldHeroStayShrineLocked(actor, strategy) {
+    if (!actor || actor.type !== "CHARACTER") return false;
+    if (!strategy || !strategy.chargedShrines || strategy.chargedShrines.length === 0) return false;
+    if (strategy.enemyThreatLevel === "immediate") return false;
+    const nearestShrine = this.closestTile(actor.coord, strategy.chargedShrines);
+    if (!nearestShrine) return false;
+    if (this.distance(actor.coord, nearestShrine) === 0) return false;
+    const nearestHero = this.closestHeroToChargedShrine(strategy);
+    return actor.id === strategy.shrineRunnerId
+      || (nearestHero && actor.id === nearestHero.id)
+      || (actor.characterId === "anika" && this.distance(actor.coord, nearestShrine) <= 3);
+  },
+
+  shouldSuppressAnikaClone(candidate, strategy) {
+    if (!candidate || !candidate.actor || candidate.actor.characterId !== "anika") return false;
+    if (candidate.action.type !== "SKILL") return false;
+    return this.shouldHeroStayShrineLocked(candidate.actor, strategy);
+  },
+
+  shouldPreferCastleFinish(actor, strategy) {
+    if (!actor || actor.type !== "CHARACTER") return false;
+    const altarDist = this.distance(actor.coord, strategy.enemyAltar.coord);
+    if (altarDist <= 2) return true;
+    const nearestShrine = this.closestTile(actor.coord, strategy.chargedShrines || []);
+    if (!nearestShrine) return altarDist <= 3;
+    const shrineDist = this.distance(actor.coord, nearestShrine);
+    return altarDist <= 3 && altarDist + 1 <= shrineDist;
+  },
+
+  adjacencyThreatPenalty(tile, enemyHeroes) {
+    const adjacent = (enemyHeroes || []).filter((enemy) => this.distance(tile, enemy.coord) <= 1).length;
+    if (adjacent === 0) return 0;
+    let penalty = adjacent * this.WEIGHTS.adjacencyThreatPenalty;
+    if (adjacent > 1) {
+      penalty += (adjacent - 1) * this.WEIGHTS.overlapThreatPenalty;
+    }
+    return penalty;
+  },
+
+  escapePressureSwing(fromTile, toTile, strategy) {
+    const beforeAdjacent = this.countAdjacentPieces(fromTile, strategy.enemyHeroes);
+    const afterAdjacent = this.countAdjacentPieces(toTile, strategy.enemyHeroes);
+    const beforeSupport = this.countAdjacentPieces(fromTile, strategy.enemyHeroes) - this.countAdjacentPieces(fromTile, strategy.myHeroes);
+    const afterSupport = this.countAdjacentPieces(toTile, strategy.enemyHeroes) - this.countAdjacentPieces(toTile, strategy.myHeroes);
+    let score = 0;
+    if (afterAdjacent < beforeAdjacent) {
+      score += (beforeAdjacent - afterAdjacent) * this.WEIGHTS.escapePressureBonus;
+    }
+    if (afterSupport < beforeSupport) {
+      score += (beforeSupport - afterSupport) * Math.trunc(this.WEIGHTS.escapePressureBonus * 0.6);
     }
     return score;
   },

@@ -1048,16 +1048,13 @@ const bot = {
   },
 
   findForcedShrineCommit(legalActions, strategy) {
-    if (!strategy || !strategy.openingShrineWindow) return null;
+    if (!strategy) return null;
     if (strategy.enemyThreatLevel === "immediate") return null;
     if (!strategy.chargedShrines || strategy.chargedShrines.length === 0) return null;
 
     const commits = (legalActions || []).filter((candidate) => {
       if (!candidate || candidate.actor.type !== "CHARACTER") return false;
       if (candidate.action.type !== "MOVE") return false;
-      const role = this.roleForHero(candidate.actor, strategy);
-      const isRunner = candidate.actor.id === strategy.shrineRunnerId;
-      if (!isRunner && role !== "support") return false;
       return strategy.chargedShrines.some((tile) => this.isSameTile(tile, candidate.action.toTile));
     });
 
@@ -1107,7 +1104,9 @@ const bot = {
     let score = 0;
     if (actor.id === strategy.shrineRunnerId) score += 500;
     if (role === "support") score += 180;
+    if (role === "shrine") score += 220;
     if (actor.characterId === "kidu") score += 220;
+    if (actor.characterId === "jumka" && strategy.enemyThreatLevel !== "none") score -= 260;
     if (this.isShrineChannelSafe(candidate.action.toTile, strategy)) score += 260;
     if (strategy.shrineRaceFavored) score += 120;
     return score;

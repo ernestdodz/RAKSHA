@@ -171,6 +171,8 @@ const bot = {
     const enemyHp = (gameState.playerHp && gameState.playerHp[enemyId]) || 6;
     const strategy = this.buildStrategyContext(gameState, myPlayerId, myHeroes, enemyHeroes, myAltar, enemyAltar, myHp, enemyHp);
     const bestHeroDefenseScore = this.bestHeroDefenseScore(gameState, legalActions, strategy);
+    const forcedDefenseRetreat = this.findForcedDefenseRetreat(legalActions, strategy);
+    if (forcedDefenseRetreat) return forcedDefenseRetreat.action;
     const forcedSiegeConversion = this.findForcedSiegeConversion(legalActions, strategy);
     if (forcedSiegeConversion) return forcedSiegeConversion.action;
     const forcedShrineCommit = this.findForcedShrineCommit(legalActions, strategy);
@@ -1108,17 +1110,82 @@ const bot = {
     return siegeMoves[0];
   },
 
+  findForcedDefenseRetreat(legalActions, strategy) {
+    if (!strategy) return null;
+    const chargedThreats = (strategy.enemyHeroes || []).filter((enemy) =>
+      this.actorHasCombatBlessing(enemy) && this.distance(enemy.coord, strategy.myAltar.coord) <= 3,
+    );
+    const immediateAttackers = strategy.enemyThreat && strategy.enemyThreat.immediateAttackers
+      ? strategy.enemyThreat.immediateAttackers
+      : [];
+    if (chargedThreats.length === 0 && immediateAttackers.length === 0) return null;
+
+    const defenses = (legalActions || []).filter((candidate) => {
+      if (!candidate || candidate.actor.type !== "CHARACTER") return false;
+      const action = candidate.action;
+      if (action.type === "ATTACK" && candidate.targetPiece) {
+        return chargedThreats.some((enemy) => enemy.id === candidate.targetPiece.id)
+          || immediateAttackers.some((enemy) => enemy.id === candidate.targetPiece.id)
+          || this.distance(candidate.targetPiece.coord, strategy.myAltar.coord) <= 2;
+      }
+      if (action.type === "MOVE") {
+        return this.distance(action.toTile, strategy.myAltar.coord) <= 2;
+      }
+      if (action.type === "SKILL") {
+        return this.distance(action.targetTile, strategy.myAltar.coord) <= 2;
+      }
+      return false;
+    });
+    if (defenses.length === 0) return null;
+
+    defenses.sort((left, right) => {
+      const leftScore = this.scoreForcedDefenseRetreat(left, strategy, chargedThreats, immediateAttackers);
+      const rightScore = this.scoreForcedDefenseRetreat(right, strategy, chargedThreats, immediateAttackers);
+      if (leftScore !== rightScore) return rightScore - leftScore;
+      return this.actionKey(left.action).localeCompare(this.actionKey(right.action));
+    });
+    return defenses[0];
+  },
+
+  scoreForcedDefenseRetreat(candidate, strategy, chargedThreats, immediateAttackers) {
+    const actor = candidate.actor;
+    const action = candidate.action;
+    let score = 0;
+    if (actor.id === strategy.defenderHeroId) score += 280;
+    if (actor.characterId === "jumka") score += 220;
+    if (actor.characterId === "mahui") score += 180;
+    if (actor.characterId === "faros") score += 140;
+
+    if (action.type === "ATTACK" && candidate.targetPiece) {
+      if (chargedThreats.some((enemy) => enemy.id === candidate.targetPiece.id)) score += 900;
+      if (immediateAttackers.some((enemy) => enemy.id === candidate.targetPiece.id)) score += 700;
+      score += Math.max(0, 3 - this.distance(candidate.targetPiece.coord, strategy.myAltar.coord)) * 150;
+    } else if (action.type === "SKILL") {
+      score += 500;
+      score += Math.max(0, 3 - this.distance(action.targetTile, strategy.myAltar.coord)) * 140;
+    } else if (action.type === "MOVE") {
+      score += 350;
+      score += Math.max(0, 3 - this.distance(action.toTile, strategy.myAltar.coord)) * 120;
+    }
+    return score;
+  },
+
   findForcedShrineAdvance(legalActions, strategy) {
     if (!strategy) return null;
     if (strategy.enemyThreatLevel === "immediate") return null;
     if (!strategy.chargedShrines || strategy.chargedShrines.length === 0) return null;
+    const nearestHero = this.closestHeroToChargedShrine(strategy);
 
     const moves = (legalActions || []).filter((candidate) => {
       if (!candidate || candidate.actor.type !== "CHARACTER") return false;
       if (candidate.action.type !== "MOVE") return false;
-      if (candidate.actor.id !== strategy.shrineRunnerId) return false;
       const nearestShrine = this.closestTile(candidate.actor.coord, strategy.chargedShrines);
       if (!nearestShrine) return false;
+      const role = this.roleForHero(candidate.actor, strategy);
+      const isPreferred = candidate.actor.id === strategy.shrineRunnerId
+        || (nearestHero && candidate.actor.id === nearestHero.id)
+        || role === "support";
+      if (!isPreferred) return false;
       return this.distance(candidate.action.toTile, nearestShrine) < this.distance(candidate.actor.coord, nearestShrine);
     });
     if (moves.length === 0) return null;
@@ -1135,6 +1202,21 @@ const bot = {
       return this.actionKey(left.action).localeCompare(this.actionKey(right.action));
     });
     return moves[0];
+  },
+
+  closestHeroToChargedShrine(strategy) {
+    let bestHero = null;
+    let bestDist = 99;
+    for (const hero of strategy.myHeroes || []) {
+      const nearestShrine = this.closestTile(hero.coord, strategy.chargedShrines);
+      if (!nearestShrine) continue;
+      const dist = this.distance(hero.coord, nearestShrine);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestHero = hero;
+      }
+    }
+    return bestHero;
   },
 
   scoreForcedShrineCommit(candidate, strategy) {

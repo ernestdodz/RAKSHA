@@ -136,6 +136,10 @@ const bot = {
     jumkaDefenseHoldBonus: 190,
     mahuiDefenseTrapBonus: 180,
     sajikControlBonus: 160,
+    guideSkillPurposeBonus: 180,
+    kiduZapPathBonus: 90,
+    kiduZapSkillBonus: 220,
+    trapSetupPathBonus: 80,
     chaordicAggro: 0.2,
   },
 
@@ -315,6 +319,7 @@ const bot = {
     const activeBounds = this.getActiveBounds(gameState);
     const chargedShrines = this.getChargedShrines(gameState);
     const enemySkillObjects = this.getEnemySkillObjects(gameState, myPlayerId);
+    const mySkillObjects = this.getMySkillObjects(gameState, myPlayerId);
     const pathCache = {};
 
     for (const hero of myHeroes) {
@@ -322,23 +327,32 @@ const bot = {
         toEnemyAltar: this.computeSafePath(gameState, hero.coord, this.getAltarApproachTiles(gameState, enemyAltar.coord), {
           enemyHeroes,
           enemySkillObjects,
+          mySkillObjects,
+          actor: hero,
           myAltar,
           enemyAltar,
           enemyThreatLevel: "none",
+          intent: "castle_siege",
         }),
         toOwnAltar: this.computeSafePath(gameState, hero.coord, this.getAltarApproachTiles(gameState, myAltar.coord), {
           enemyHeroes,
           enemySkillObjects,
+          mySkillObjects,
+          actor: hero,
           myAltar,
           enemyAltar,
           enemyThreatLevel: "none",
+          intent: "castle_defense",
         }),
         toShrine: this.computeSafePath(gameState, hero.coord, chargedShrines, {
           enemyHeroes,
           enemySkillObjects,
+          mySkillObjects,
+          actor: hero,
           myAltar,
           enemyAltar,
           enemyThreatLevel: "none",
+          intent: "shrine_race",
         }),
       };
     }
@@ -374,11 +388,13 @@ const bot = {
       enemyAltar,
       myHeroes,
       enemyHeroes,
+      mySkillObjects,
       enemySkillObjects: this.getEnemySkillObjects(gameState, myPlayerId),
       myHp,
       enemyHp,
       activeBounds,
       chargedShrines,
+      mySkillObjects,
       enemySkillObjects,
       pathCache,
       primarySiegerId: roleAssignment.primarySiegerId,
@@ -752,6 +768,8 @@ const bot = {
     const distToEnemyAltar = this.distance(targetTile, strategy.enemyAltar.coord);
     const distToSiegerPath = this.distanceToPath(targetTile, strategy.siegerPath ? strategy.siegerPath.path : []);
     const distToMyAltar = this.distance(targetTile, strategy.myAltar.coord);
+    const nearestShrine = this.closestTile(targetTile, strategy.chargedShrines);
+    const shrineAdj = nearestShrine ? this.distance(targetTile, nearestShrine) <= 1 : false;
     let score = this.WEIGHTS.pathControlSkill;
 
     score -= this.scoreSelfTrapSkillPenalty(candidate, strategy);
@@ -766,12 +784,31 @@ const bot = {
     score += this.scoreDefensiveSkillPlacement(candidate, strategy);
     score += this.scoreHeroSkillIntent(candidate, strategy);
 
-    if (heroId === "mahui") score += adjacentEnemies * 140 + Math.max(0, 4 - distToMyAltar) * 30;
-    if (heroId === "faros") score += adjacentEnemies * 120 + Math.max(0, 3 - distToSiegerPath) * 55;
-    if (heroId === "sajik") score += adjacentEnemies * 110 + Math.max(0, 3 - distToSiegerPath) * 48;
-    if (heroId === "kidu") score += Math.max(0, 6 - distToEnemyAltar) * 44 + Math.max(0, 3 - distToSiegerPath) * 36;
+    if (heroId === "mahui") {
+      score += adjacentEnemies * 140 + Math.max(0, 4 - distToMyAltar) * 30;
+      if (distToMyAltar <= 3 || shrineAdj) score += this.WEIGHTS.guideSkillPurposeBonus;
+    }
+    if (heroId === "faros") {
+      score += adjacentEnemies * 120 + Math.max(0, 3 - distToSiegerPath) * 55;
+      if (shrineAdj || this.distance(targetTile, strategy.center) <= 1) score += this.WEIGHTS.guideSkillPurposeBonus;
+    }
+    if (heroId === "sajik") {
+      score += adjacentEnemies * 110 + Math.max(0, 3 - distToSiegerPath) * 48;
+      if (shrineAdj || distToSiegerPath <= 1) score += this.WEIGHTS.guideSkillPurposeBonus;
+    }
+    if (heroId === "kidu") {
+      const nearestOwnedSkill = this.closestTile(targetTile, (strategy.mySkillObjects || []).map((piece) => piece.coord));
+      score += Math.max(0, 6 - distToEnemyAltar) * 44 + Math.max(0, 3 - distToSiegerPath) * 36;
+      if (nearestOwnedSkill) score += Math.max(0, 3 - this.distance(targetTile, nearestOwnedSkill)) * this.WEIGHTS.kiduZapSkillBonus;
+      if (strategy.chargedShrines.length > 0 && nearestShrine) {
+        score += Math.max(0, 3 - this.distance(targetTile, nearestShrine)) * Math.trunc(this.WEIGHTS.kiduZapSkillBonus * 0.45);
+      }
+    }
     if (heroId === "anika") score += adjacentEnemies * 85 + Math.max(0, 4 - distToEnemyAltar) * 28;
-    if (heroId === "jumka") score += adjacentEnemies * 92 + Math.max(0, 4 - distToSiegerPath) * 32;
+    if (heroId === "jumka") {
+      score += adjacentEnemies * 92 + Math.max(0, 4 - distToSiegerPath) * 32;
+      if (distToMyAltar <= 3) score += this.WEIGHTS.guideSkillPurposeBonus;
+    }
 
     return score;
   },
@@ -831,25 +868,37 @@ const bot = {
       if (strategy.defenseWindow && (role === "defender" || heroId === "jumka" || heroId === "mahui" || heroId === "faros")) {
         return this.computeSafePath(gameState, originTile, strategy.myAltarApproachTiles, {
           enemyHeroes: strategy.enemyHeroes,
+          enemySkillObjects: strategy.enemySkillObjects,
+          mySkillObjects: strategy.mySkillObjects,
+          actor,
           myAltar: strategy.myAltar,
           enemyAltar: strategy.enemyAltar,
           enemyThreatLevel: strategy.enemyThreatLevel,
+          intent: "castle_defense",
         });
       }
       if (strategy.phase === "opening" && strategy.chargedShrines.length > 0 && (role === "shrine" || heroId === "kidu")) {
         return this.computeSafePath(gameState, originTile, strategy.chargedShrines, {
           enemyHeroes: strategy.enemyHeroes,
+          enemySkillObjects: strategy.enemySkillObjects,
+          mySkillObjects: strategy.mySkillObjects,
+          actor,
           myAltar: strategy.myAltar,
           enemyAltar: strategy.enemyAltar,
           enemyThreatLevel: strategy.enemyThreatLevel,
+          intent: "shrine_race",
         });
       }
       if (strategy.phase === "conversion" && (heroId === "anika" || heroId === "kidu" || role === "sieger")) {
         return this.computeSafePath(gameState, originTile, strategy.altarApproachTiles, {
           enemyHeroes: strategy.enemyHeroes,
+          enemySkillObjects: strategy.enemySkillObjects,
+          mySkillObjects: strategy.mySkillObjects,
+          actor,
           myAltar: strategy.myAltar,
           enemyAltar: strategy.enemyAltar,
           enemyThreatLevel: strategy.enemyThreatLevel,
+          intent: "castle_siege",
         });
       }
     }
@@ -865,9 +914,13 @@ const bot = {
       if (supportGoals.length > 0) {
         return this.computeSafePath(gameState, originTile, supportGoals, {
           enemyHeroes: strategy.enemyHeroes,
+          enemySkillObjects: strategy.enemySkillObjects,
+          mySkillObjects: strategy.mySkillObjects,
+          actor,
           myAltar: strategy.myAltar,
           enemyAltar: strategy.enemyAltar,
           enemyThreatLevel: strategy.enemyThreatLevel,
+          intent: "trap_setup",
         });
       }
     }
@@ -875,17 +928,25 @@ const bot = {
     if (role === "support" && strategy.enemyThreatLevel !== "none") {
       return this.computeSafePath(gameState, originTile, strategy.myAltarApproachTiles, {
         enemyHeroes: strategy.enemyHeroes,
+        enemySkillObjects: strategy.enemySkillObjects,
+        mySkillObjects: strategy.mySkillObjects,
+        actor,
         myAltar: strategy.myAltar,
         enemyAltar: strategy.enemyAltar,
         enemyThreatLevel: strategy.enemyThreatLevel,
+        intent: "castle_defense",
       });
     }
 
     return this.computeSafePath(gameState, originTile, strategy.altarApproachTiles, {
       enemyHeroes: strategy.enemyHeroes,
+      enemySkillObjects: strategy.enemySkillObjects,
+      mySkillObjects: strategy.mySkillObjects,
+      actor,
       myAltar: strategy.myAltar,
       enemyAltar: strategy.enemyAltar,
       enemyThreatLevel: strategy.enemyThreatLevel,
+      intent: role === "defender" ? "castle_defense" : "castle_siege",
     });
   },
 
@@ -895,13 +956,16 @@ const bot = {
     }
 
     const bounds = this.getActiveBounds(gameState);
+    const profile = this.pathIntentProfile(options && options.intent);
     const goalKeys = new Set(goalTiles.map((tile) => `${tile.x},${tile.y}`));
     const startKey = `${startTile.x},${startTile.y}`;
-    const frontier = [{ tile: startTile, key: startKey, totalCost: 0, steps: 0 }];
+    const startHeuristic = this.chebyshevToGoals(startTile, goalTiles) * profile.heuristicWeight;
+    const frontier = [{ tile: startTile, key: startKey, totalCost: 0, steps: 0, priority: startHeuristic }];
     const best = { [startKey]: { totalCost: 0, steps: 0, parent: null } };
 
     while (frontier.length > 0) {
       frontier.sort((left, right) => {
+        if (left.priority !== right.priority) return left.priority - right.priority;
         if (left.totalCost !== right.totalCost) return left.totalCost - right.totalCost;
         if (left.steps !== right.steps) return left.steps - right.steps;
         return this.compareTiles(left.tile, right.tile);
@@ -930,10 +994,12 @@ const bot = {
         const penalty = this.pathTilePenalty(gameState, next, options);
         const nextTotal = current.totalCost + 10 + penalty;
         const nextSteps = current.steps + 1;
+        const heuristic = this.chebyshevToGoals(next, goalTiles) * profile.heuristicWeight;
+        const nextPriority = nextTotal + heuristic;
         const existing = best[nextKey];
-        if (existing && existing.totalCost <= nextTotal) continue;
+        if (existing && (existing.totalCost < nextTotal || (existing.totalCost === nextTotal && existing.steps <= nextSteps))) continue;
         best[nextKey] = { totalCost: nextTotal, steps: nextSteps, parent: current.key };
-        frontier.push({ tile: next, key: nextKey, totalCost: nextTotal, steps: nextSteps });
+        frontier.push({ tile: next, key: nextKey, totalCost: nextTotal, steps: nextSteps, priority: nextPriority });
       }
     }
 
@@ -943,6 +1009,9 @@ const bot = {
   pathTilePenalty(gameState, tile, options) {
     const enemyHeroes = (options && options.enemyHeroes) || [];
     const enemySkillObjects = (options && options.enemySkillObjects) || [];
+    const mySkillObjects = (options && options.mySkillObjects) || [];
+    const actor = options && options.actor;
+    const profile = this.pathIntentProfile(options && options.intent);
     let penalty = 0;
 
     for (const enemy of enemyHeroes) {
@@ -951,7 +1020,7 @@ const bot = {
       else if (dist === 1) penalty += 16;
       else if (dist === 2) penalty += 5;
     }
-    penalty += this.adjacencyThreatPenalty(tile, enemyHeroes);
+    penalty += Math.trunc(this.adjacencyThreatPenalty(tile, enemyHeroes) * profile.adjacencyMultiplier);
 
     for (const skill of enemySkillObjects) {
       const dist = this.distance(tile, skill.coord);
@@ -960,12 +1029,22 @@ const bot = {
       else if (dist === 2) penalty += Math.trunc(this.WEIGHTS.enemySkillDangerPenalty * 0.3);
     }
 
+    if (actor && actor.characterId === "kidu") {
+      const nearestOwnedSkill = this.closestTile(tile, mySkillObjects.map((piece) => piece.coord));
+      if (nearestOwnedSkill) {
+        penalty -= Math.max(0, 2 - this.distance(tile, nearestOwnedSkill)) * this.WEIGHTS.kiduZapPathBonus;
+      }
+    }
+
     const openNeighbors = this.directionVectors().filter((direction) => {
       const next = { x: tile.x + direction.x, y: tile.y + direction.y };
       if (this.isVoidTile(gameState, next)) return false;
       return !this.isTileBlocked(gameState, next);
     }).length;
-    if (openNeighbors <= 2) penalty += 8;
+    if (openNeighbors <= 2) penalty += Math.trunc(8 * profile.deadEndMultiplier);
+    if (profile.intent === "escape" && openNeighbors >= 4) {
+      penalty -= this.WEIGHTS.escapePressureBonus;
+    }
 
     if (options && options.enemyThreatLevel !== "none" && options.myAltar && this.distance(tile, options.myAltar.coord) > 4) {
       penalty += 6;
@@ -1364,6 +1443,13 @@ const bot = {
       .sort((a, b) => a.id.localeCompare(b.id));
   },
 
+  getMySkillObjects(gameState, myPlayerId) {
+    return gameState.pieces
+      .filter((piece) => piece.owner === myPlayerId && piece.type === "SKILL_OBJECT")
+      .slice()
+      .sort((a, b) => a.id.localeCompare(b.id));
+  },
+
   getActiveBounds(gameState) {
     if (gameState.activeBounds) return gameState.activeBounds;
     return {
@@ -1486,6 +1572,32 @@ const bot = {
     if (characterId === "sajik") return "QUICKSAND";
     if (characterId === "jumka") return "WILLOW";
     return "SKILL";
+  },
+
+  pathIntentProfile(intent) {
+    if (intent === "shrine_race") {
+      return { intent, heuristicWeight: 9, adjacencyMultiplier: 0.8, deadEndMultiplier: 1.0 };
+    }
+    if (intent === "castle_defense") {
+      return { intent, heuristicWeight: 7, adjacencyMultiplier: 0.9, deadEndMultiplier: 0.9 };
+    }
+    if (intent === "escape") {
+      return { intent, heuristicWeight: 6, adjacencyMultiplier: 1.35, deadEndMultiplier: 1.45 };
+    }
+    if (intent === "trap_setup") {
+      return { intent, heuristicWeight: 6, adjacencyMultiplier: 1.05, deadEndMultiplier: 0.95 };
+    }
+    return { intent: "castle_siege", heuristicWeight: 8, adjacencyMultiplier: 1.15, deadEndMultiplier: 1.1 };
+  },
+
+  chebyshevToGoals(tile, goalTiles) {
+    if (!tile || !goalTiles || goalTiles.length === 0) return 0;
+    let best = 99;
+    for (const goal of goalTiles) {
+      const dist = this.distance(tile, goal);
+      if (dist < best) best = dist;
+    }
+    return best;
   },
 
   chaordicUrgencyScale(gameState, myHp, enemyHp) {
